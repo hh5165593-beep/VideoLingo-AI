@@ -114,10 +114,10 @@ def download(job_id: str):
 # serve the (unchanged) frontend
 @app.get("/")
 def index():
-    idx = os.path.join(STATIC, "index.html")
+    idx = os.path.join(BASE, "index.html")
     if os.path.exists(idx):
         return FileResponse(idx, media_type="text/html")
-    return JSONResponse({"detail": "frontend not found — place index.html in static/"})
+    return JSONResponse({"detail": "index.html not found"})
 
 if __name__ == "__main__":
     import uvicorn
