@@ -1,5 +1,5 @@
 {
   "buildpack": "python",
-  "buildCommand": "python -m pip uninstall -y torch torchvision torchaudio transformers sentencepiece sacremoses || true && python -m pip install --no-cache-dir -r requirements.txt",
+  "buildCommand": "apt-get update && apt-get install -y ffmpeg && python -m pip uninstall -y torch torchvision torchaudio transformers sentencepiece sacremoses || true && python -m pip install --no-cache-dir -r requirements.txt",
   "startCommand": "python server.py"
 }
