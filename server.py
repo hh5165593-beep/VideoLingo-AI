@@ -32,9 +32,16 @@ MAX_SIZE = 4 * 1024**3  # 4GB per upload; no time limit
 
 @app.get("/api/v1/health")
 def health():
-    return {"status": "ok", "languages": pipeline.LANGS,
-            "engine": {"stt": "faster-whisper (tiny, int8)", "translation": "Helsinki-NLP opus-mt (lazy)",
-                       "tts": "Piper", "video": "FFmpeg"}}
+    return {
+        "status": "ok",
+        "languages": pipeline.LANGS,
+        "engine": {
+            "stt": "faster-whisper (tiny, int8)",
+            "translation": "Argos Translate (open-source)",
+            "tts": "Piper",
+            "video": "FFmpeg"
+        }
+    }
 
 @app.post("/api/v1/jobs")
 async def create_job(video: UploadFile = File(...)):
