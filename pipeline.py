@@ -253,7 +253,7 @@ def translate_segments(job_id, src, tgt):
         out
     )
 
-    return out-----
+    return out
 
         
 
