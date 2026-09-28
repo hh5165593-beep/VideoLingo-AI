@@ -87,68 +87,175 @@ def transcribe(job_id, source_lang):
         json.dump({"detected_language": detected, "segments": segs}, f, ensure_ascii=False)
     return segs, detected
 
-# ---------- stage 3: translate (opus-mt, lazy per direction, pivot via en) ----------
-_translators = {}
-class _Translator:
-    def __init__(self, model_name):
-        from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-        import torch
-        self.tok = AutoTokenizer.from_pretrained(model_name, cache_dir=MODELS)
-        self.model = AutoModelForSeq2SeqLM.from_pretrained(model_name, cache_dir=MODELS)
-        self.torch = torch
-    def __call__(self, text, max_length=200):
-        inputs = self.tok(text, return_tensors="pt", truncation=True)
-        with self.torch.no_grad():
-            out = self.model.generate(**inputs, max_length=max_length)
-        return [{"translation_text": self.tok.decode(out[0], skip_special_tokens=True)}]
+# ---------- stage 3: translate (Argos Translate) ----------
 
-def _get_translator(src, tgt):
-    key = (src, tgt)
-    if key in _translators: return _translators[key]
-    model_name = OPUS_DIRECT.get(key)
-    if model_name:
-        _translators[key] = _Translator(model_name)
-        return _translators[key]
+ARGOS_DIR = os.path.join(MODELS, "argos")
+os.makedirs(ARGOS_DIR, exist_ok=True)
+
+_argos_ready = set()
+_argos_lock = None
+
+
+def _argos_lock_init():
+    global _argos_lock
+    if _argos_lock is None:
+        import threading
+        _argos_lock = threading.Lock()
+    return _argos_lock
+
+
+def _argos_import():
+    try:
+        import argostranslate.package
+        import argostranslate.translate
+        return argostranslate.package, argostranslate.translate
+    except Exception as e:
+        raise RuntimeError(
+            "Argos Translate is not available. "
+            "Check requirements.txt and redeploy."
+        ) from e
+
+
+def _argos_find_package(from_code, to_code):
+    package, _ = _argos_import()
+    package.update_package_index()
+
+    for p in package.get_available_packages():
+        if p.from_code == from_code and p.to_code == to_code:
+            return p
+
     return None
+
+
+def _argos_install_pair(from_code, to_code):
+    if from_code == to_code:
+        return
+
+    key = (from_code, to_code)
+
+    if key in _argos_ready:
+        return
+
+    lock = _argos_lock_init()
+
+    with lock:
+        if key in _argos_ready:
+            return
+
+        package, translate = _argos_import()
+
+        model = _argos_find_package(from_code, to_code)
+
+        if model is None:
+            raise RuntimeError(
+                f"No Argos translation model for "
+                f"{from_code}->{to_code}"
+            )
+
+        downloaded = model.download()
+        package.install_from_path(downloaded)
+
+        _argos_ready.add(key)
+
+
+def _argos_translate_text(text, src, tgt):
+    if not text or not text.strip():
+        return ""
+
+    if src == tgt:
+        return text
+
+    _, translate = _argos_import()
+
+    _argos_install_pair(src, tgt)
+
+    return translate.translate(
+        text,
+        from_code=src,
+        to_code=tgt
+    )
+
 
 def translate_segments(job_id, src, tgt):
     d = job_dir(job_id)
-    with open(os.path.join(d, "transcript.json")) as f:
+
+    with open(
+        os.path.join(d, "transcript.json"),
+        encoding="utf-8"
+    ) as f:
         tr = json.load(f)
+
     segs = tr["segments"]
-    if src == "auto": src = tr.get("detected_language", "en")
-    direct = _get_translator(src, tgt)
-    pivot1 = pivot2 = None
-    if direct is None and src != "en":
-        pivot1 = _get_translator(src, "en")
-        pivot2 = _get_translator("en", tgt)
-    if direct is None and pivot1 is None:
-        raise RuntimeError(f"No open-source translation model available for {src}→{tgt}. "
-                           f"Install NLLB-200 (needs ~3GB RAM) or add opus-mt pair.")
+
+    if src == "auto":
+        src = tr.get("detected_language", "en")
+
+    src = (src or "en").lower()
+    tgt = (tgt or "en").lower()
+
+    if src not in LANGS:
+        raise RuntimeError(
+            f"Unsupported source language: {src}"
+        )
+
+    if tgt not in LANGS:
+        raise RuntimeError(
+            f"Unsupported target language: {tgt}"
+        )
+
     out = []
+    total = max(1, len(segs))
+
     for i, seg in enumerate(segs):
-        text = seg["text"]
+        text = (seg.get("text") or "").strip()
+
         if not text:
             translated = ""
-        elif direct:
-            translated = direct(text, max_length=200)[0]["translation_text"]
+        elif src == tgt:
+            translated = text
         else:
-            mid = pivot1(text, max_length=200)[0]["translation_text"]
-            translated = pivot2(mid, max_length=200)[0]["translation_text"] if pivot2 else mid
-        out.append({"start": seg["start"], "end": seg["end"], "text": translated})
-        set_status(job_id, 3, "Translating", progress=int((i+1)/len(segs)*100))
-    with open(os.path.join(d, "translated.json"), "w") as f:
-        json.dump({"source_language": src, "target_language": tgt, "segments": out}, f, ensure_ascii=False)
-    write_srt(os.path.join(d, "subtitles.srt"), out)
-    return out
+            translated = _argos_translate_text(
+                text,
+                src,
+                tgt
+            )
 
-def write_srt(path, segs):
-    def ts(sec):
-        h = int(sec//3600); m = int((sec%3600)//60); s = sec%60
-        return f"{h:02d}:{m:02d}:{s:06.3f}".replace(".", ",")
-    with open(path, "w", encoding="utf-8") as f:
-        for i, seg in enumerate(segs, 1):
-            f.write(f"{i}\n{ts(seg['start'])} --> {ts(seg['end'])}\n{seg['text']}\n\n")
+        out.append({
+            "start": seg["start"],
+            "end": seg["end"],
+            "text": translated
+        })
+
+        set_status(
+            job_id,
+            3,
+            "Translating",
+            progress=int(((i + 1) / total) * 100)
+        )
+
+    with open(
+        os.path.join(d, "translated.json"),
+        "w",
+        encoding="utf-8"
+    ) as f:
+        json.dump(
+            {
+                "source_language": src,
+                "target_language": tgt,
+                "segments": out
+            },
+            f,
+            ensure_ascii=False
+        )
+
+    write_srt(
+        os.path.join(d, "subtitles.srt"),
+        out
+    )
+
+    return out-----
+
+        
 
 # ---------- stage 4: TTS (piper) ----------
 def _ensure_piper_voice(lang):
