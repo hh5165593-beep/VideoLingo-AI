@@ -4,6 +4,7 @@ Stages indices match the frontend:
 4 Generating Voice, 5 Synchronizing Audio, 6 Rendering Video, 7 Completed.
 """
 import os, json, subprocess, wave, math, shutil
+import imageio_ffmpeg
 import numpy as np
 
 BASE = os.path.dirname(os.path.abspath(__file__))
@@ -21,7 +22,7 @@ PIPER_VOICES = {
     "ar": ("ar_JO-kareem-medium", "ar/ar_JO/kareem/medium/ar_JO-kareem-medium"),
     "zh": ("zh_CN-huayan-medium", "zh/zh_CN/huayan/medium/zh_CN-huayan-medium"),
 }
-PIPER_BASE = "https://huggingface.co/rhasspy/piper-voices/resolve/main"
+FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
 
 # Opus-MT direct pairs that exist on Helsinki-NLP (lazy download)
 OPUS_DIRECT = {
@@ -32,6 +33,9 @@ OPUS_DIRECT = {
 }
 
 def run(cmd, **kw):
+    cmd = list(cmd)
+    if cmd and cmd[0] == "ffmpeg":
+        cmd[0] = FFMPEG
     return subprocess.run(cmd, capture_output=True, text=True, **kw)
 
 def job_dir(job_id):
